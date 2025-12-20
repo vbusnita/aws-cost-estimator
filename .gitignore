@@ -6,3 +6,6 @@ __pycache__/
 
 # Temp
 *.tmp
+
+# Cost log
+eks-cost-log.json

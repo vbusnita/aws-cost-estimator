@@ -118,6 +118,24 @@ def auto_destroy(total_cost, idle_seconds):
         subprocess.run(["terraform", "destroy", "-auto-approve"], check=True)
         sys.exit(0)
 
+def get_cumulative_costs():
+    if not os.path.exists(LOG_FILE):
+        return 0.0, 0.0
+
+    with open(LOG_FILE, "r") as f:
+        logs = json.load(f)
+
+    if not logs:
+        return 0.0, 0.0
+
+    # Cumulative = latest total_cost (each entry is running total)
+    total_racked = logs[-1]["total_cost"]
+
+    # Current session = same (or sum if you want interval sum)
+    current_session = total_racked
+
+    return total_racked, current_session
+
 def main(stdscr):
     curses.curs_set(0)
     curses.start_color()
@@ -127,6 +145,8 @@ def main(stdscr):
 
     instance_type = get_instance_type()
     node_rate = get_node_rate(instance_type)
+
+
 
     while True:
         stdscr.clear()
@@ -165,11 +185,17 @@ def main(stdscr):
         stdscr.addstr(7, 0, f"💻 Node type: {instance_type} @ ${node_rate:.4f}/hr")
         stdscr.addstr(9, 0, "📊 Costs so far:", curses.A_BOLD)
         stdscr.addstr(10, 2, f"Control plane: ${control_cost:.4f}")
-        stdscr.addstr(11, 2, f"GPU node:      ${gpu_cost:.4f}")
+        stdscr.addstr(11, 2, f"Worker node:   ${gpu_cost:.4f}")
         stdscr.addstr(12, 2, f"TOTAL:         ${total_cost:.4f}", curses.color_pair(1) if total_cost < MAX_TOTAL_COST else curses.color_pair(3) | curses.A_BOLD)
-        stdscr.addstr(14, 0, f"🛡️  Dead-man: >${MAX_TOTAL_COST} + {IDLE_THRESHOLD_SECONDS//60}m idle → auto destroy")
-        stdscr.addstr(15, 0, f"📄 Log: {LOG_FILE}")
-        stdscr.addstr(17, 0, f"🔄 Last update: {datetime.datetime.now().strftime('%H:%M:%S')} | Ctrl+C to exit")
+        total_racked, current_session = get_cumulative_costs()
+
+        stdscr.addstr(14, 0, "📈 Cumulative costs:", curses.A_BOLD)
+        stdscr.addstr(15, 2, f"All time racked:   ${total_racked:.4f}")
+        stdscr.addstr(16, 2, f"Current session:   ${current_session:.4f}")
+        
+        stdscr.addstr(18, 0, f"🛡️  Dead-man: >${MAX_TOTAL_COST} + {IDLE_THRESHOLD_SECONDS//60}m idle → auto destroy")
+        stdscr.addstr(19, 0, f"📄 Log: {LOG_FILE}")
+        stdscr.addstr(20, 0, f"🔄 Last update: {datetime.datetime.now().strftime('%H:%M:%S')} | Ctrl+C to exit")
 
         # Log entry
         log_cost({
