@@ -8,4 +8,4 @@ __pycache__/
 *.tmp
 
 # Cost log
-eks-cost-log.json
+cost_logs/
