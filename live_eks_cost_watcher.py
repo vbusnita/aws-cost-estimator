@@ -21,6 +21,8 @@ INSTANCE_PRICES = {
     "g4dn.xlarge": 0.526,
     "p3.2xlarge": 3.06,
     "m5.large": 0.096,
+    "m5.xlarge": 0.192,
+    "m6i.2xlarge": 0.384,
     # Add more as needed
 }
 
