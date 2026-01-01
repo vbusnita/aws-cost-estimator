@@ -5,7 +5,6 @@ import time
 import curses
 import os
 import json
-import sys
 
 # ================== CONFIG ==================
 CLUSTER_NAME = "eks-ray-llm"
@@ -27,12 +26,14 @@ INSTANCE_PRICES = {
 }
 
 def run_cmd(cmd):
-    # Insert the profile at the beginning of the command
     full_cmd = ["aws", "--profile", "terraform-local"] + cmd
     try:
         return subprocess.run(full_cmd, capture_output=True, text=True, check=True).stdout.strip()
     except:
         return None
+
+def get_cluster_status():
+    return run_cmd(["eks", "describe-cluster", "--name", CLUSTER_NAME, "--region", REGION, "--query", "cluster.status", "--output", "text"])
 
 def get_cluster_creation_time():
     return run_cmd(["eks", "describe-cluster", "--name", CLUSTER_NAME, "--region", REGION, "--query", "cluster.createdAt", "--output", "text"])
@@ -51,7 +52,8 @@ def main(stdscr):
     curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)
 
     creation_time = None
-    instance_type = None
+    instance_type = "unknown"
+    start_time = None  # Timestamp when cluster first became ACTIVE in this run
 
     try:
         while True:
@@ -61,62 +63,82 @@ def main(stdscr):
             stdscr.addstr(2, 0, f" Cluster: {CLUSTER_NAME} | Region: {REGION}", curses.A_BOLD)
             stdscr.addstr(3, 0, "═" * 60, curses.A_BOLD)
 
-            if not creation_time:
-                creation_time = get_cluster_creation_time()
-            if not instance_type:
-                instance_type = get_instance_type()
+            status = get_cluster_status()
 
-            if not creation_time:
-                stdscr.addstr(5, 0, "❌ Cluster not found — waiting for creation...", curses.color_pair(3))
+            if status != "ACTIVE":
+                status_msg = status or "not found"
+                stdscr.addstr(5, 0, f"Infra: OFFLINE (status: {status_msg})", curses.color_pair(3))
+                stdscr.addstr(7, 0, "Cost accrual paused — waiting for cluster to become ACTIVE")
+                stdscr.addstr(19, 0, f"Last update: {datetime.datetime.now().strftime('%H:%M:%S')} | Ctrl+C to exit")
                 stdscr.refresh()
                 time.sleep(UPDATE_INTERVAL)
                 continue
 
-            # Parse time
+            # Cluster is ACTIVE
+            stdscr.addstr(5, 0, "Infra: ONLINE", curses.color_pair(1))
+
+            if not creation_time:
+                creation_time = get_cluster_creation_time()
+            if instance_type == "unknown":
+                instance_type = get_instance_type()
+            if not start_time:
+                start_time = time.time()  # Start billing clock only when we see ACTIVE
+
+            # Displayed running time (from creation, for reference)
             try:
                 dt = datetime.datetime.fromisoformat(creation_time.replace("Z", "+00:00"))
-                hours_running = (time.time() - dt.timestamp()) / 3600
+                displayed_hours = (time.time() - dt.timestamp()) / 3600
             except:
-                stdscr.addstr(5, 0, "⚠️ Timestamp parse error", curses.color_pair(2))
-                hours_running = 0
+                displayed_hours = 0
 
-            control_cost = hours_running * CONTROL_PLANE_RATE
+            # Actual billable time for this session (only while ACTIVE)
+            billable_hours = (time.time() - start_time) / 3600
+
+            control_cost = billable_hours * CONTROL_PLANE_RATE
             node_rate = get_node_rate(instance_type)
-            gpu_cost = hours_running * node_rate
+            gpu_cost = billable_hours * node_rate
             total_cost = control_cost + gpu_cost
 
-            stdscr.addstr(5, 0, f"⏱  Running: {hours_running:.3f} hours")
-            stdscr.addstr(7, 0, f"💻 Node type: {instance_type} @ ${node_rate:.4f}/hr")
-            stdscr.addstr(10, 0, "📊 SESSION TOTAL COST", curses.A_BOLD)
-            stdscr.addstr(11, 2, f"${total_cost:.4f}", curses.color_pair(1) if total_cost < 5.0 else curses.color_pair(3) | curses.A_BOLD)
+            stdscr.addstr(7, 0, f"Running since creation: {displayed_hours:.3f} hours")
+            stdscr.addstr(8, 0, f"Node type: {instance_type} @ ${node_rate:.4f}/hr")
 
-            stdscr.addstr(19, 0, f"🔄 Last update: {datetime.datetime.now().strftime('%H:%M:%S')} | Ctrl+C to exit")
+            stdscr.addstr(11, 0, "SESSION TOTAL COST", curses.A_BOLD)
+            stdscr.addstr(12, 2, f"${total_cost:.4f}",
+                          curses.color_pair(1) if total_cost < 5.0 else curses.color_pair(3) | curses.A_BOLD)
+
+            stdscr.addstr(19, 0, f"Last update: {datetime.datetime.now().strftime('%H:%M:%S')} | Ctrl+C to exit")
 
             stdscr.refresh()
             time.sleep(UPDATE_INTERVAL)
+
     except KeyboardInterrupt:
-        # On Ctrl+C, save session summary to dated JSON in log dir
-        if creation_time:
+        # Graceful exit — print to console instead of curses to avoid crash
+        if start_time and status == "ACTIVE":
             now = datetime.datetime.now()
             os.makedirs(LOG_DIR, exist_ok=True)
             file_name = f"eks_session_{now.strftime('%Y-%m-%d_%H-%M-%S')}.json"
             file_path = os.path.join(LOG_DIR, file_name)
+
+            final_billable_hours = (time.time() - start_time) / 3600
+            final_control_cost = final_billable_hours * CONTROL_PLANE_RATE
+            final_gpu_cost = final_billable_hours * node_rate
+            final_total = final_control_cost + final_gpu_cost
+
             data = {
                 "session_end": now.isoformat(),
                 "creation_time": creation_time,
-                "hours_running": round(hours_running, 3),
+                "billable_hours": round(final_billable_hours, 3),
                 "instance_type": instance_type,
-                "control_cost": round(control_cost, 4),
-                "gpu_cost": round(gpu_cost, 4),
-                "total_cost": round(total_cost, 4)
+                "control_cost": round(final_control_cost, 4),
+                "gpu_cost": round(final_gpu_cost, 4),
+                "total_cost": round(final_total, 4)
             }
             with open(file_path, "w") as f:
                 json.dump(data, f, indent=2)
-            stdscr.addstr(22, 0, f"Session saved to {file_path}. Exiting...", curses.A_BOLD)
+
+            print(f"\nSession saved to {file_path}")
         else:
-            stdscr.addstr(22, 0, "No session data to save. Exiting...", curses.A_BOLD)
-        stdscr.refresh()
-        time.sleep(1)
+            print("\nNo active session data to save.")
 
 if __name__ == "__main__":
     curses.wrapper(main)
