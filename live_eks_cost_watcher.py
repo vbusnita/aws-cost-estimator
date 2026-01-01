@@ -42,7 +42,7 @@ def get_instance_type():
     return run_cmd(["eks", "describe-nodegroup", "--cluster-name", CLUSTER_NAME, "--nodegroup-name", "gpu", "--region", REGION, "--query", "nodegroup.instanceTypes[0]", "--output", "text"]) or "unknown"
 
 def get_node_rate(instance_type):
-    return INSTANCE_PRICES.get(instance_type, 0.45)  # fallback average
+    return INSTANCE_PRICES.get(instance_type, 0.45)
 
 def main(stdscr):
     curses.curs_set(0)
@@ -53,28 +53,28 @@ def main(stdscr):
 
     creation_time = None
     instance_type = "unknown"
-    start_time = None  # Timestamp when cluster first became ACTIVE in this run
+    start_time = None
 
     try:
         while True:
             stdscr.clear()
-            stdscr.addstr(0, 0, "═" * 60, curses.A_BOLD)
+            stdscr.addstr(0, 0, "=" * 60, curses.A_BOLD)
             stdscr.addstr(1, 0, " LIVE EKS COST ESTIMATOR ", curses.A_BOLD | curses.color_pair(1))
             stdscr.addstr(2, 0, f" Cluster: {CLUSTER_NAME} | Region: {REGION}", curses.A_BOLD)
-            stdscr.addstr(3, 0, "═" * 60, curses.A_BOLD)
+            stdscr.addstr(3, 0, "=" * 60, curses.A_BOLD)
 
             status = get_cluster_status()
 
             if status != "ACTIVE":
                 status_msg = status or "not found"
-                stdscr.addstr(5, 0, f"Infra: OFFLINE (status: {status_msg})", curses.color_pair(3))
-                stdscr.addstr(7, 0, "Cost accrual paused — waiting for cluster to become ACTIVE")
-                stdscr.addstr(19, 0, f"Last update: {datetime.datetime.now().strftime('%H:%M:%S')} | Ctrl+C to exit")
+                stdscr.addstr(5, 0, f"Infra: OFFLINE ({status_msg})", curses.color_pair(3))
+                stdscr.addstr(7, 0, "Cost accrual paused - waiting for cluster")
+                # Footer moved up to avoid line 19 issue on small terminals
+                stdscr.addstr(17, 0, f"Last update: {datetime.datetime.now().strftime('%H:%M:%S')} | Ctrl+C to exit")
                 stdscr.refresh()
                 time.sleep(UPDATE_INTERVAL)
                 continue
 
-            # Cluster is ACTIVE
             stdscr.addstr(5, 0, "Infra: ONLINE", curses.color_pair(1))
 
             if not creation_time:
@@ -82,16 +82,14 @@ def main(stdscr):
             if instance_type == "unknown":
                 instance_type = get_instance_type()
             if not start_time:
-                start_time = time.time()  # Start billing clock only when we see ACTIVE
+                start_time = time.time()
 
-            # Displayed running time (from creation, for reference)
             try:
                 dt = datetime.datetime.fromisoformat(creation_time.replace("Z", "+00:00"))
                 displayed_hours = (time.time() - dt.timestamp()) / 3600
             except:
                 displayed_hours = 0
 
-            # Actual billable time for this session (only while ACTIVE)
             billable_hours = (time.time() - start_time) / 3600
 
             control_cost = billable_hours * CONTROL_PLANE_RATE
@@ -101,18 +99,17 @@ def main(stdscr):
 
             stdscr.addstr(7, 0, f"Running since creation: {displayed_hours:.3f} hours")
             stdscr.addstr(8, 0, f"Node type: {instance_type} @ ${node_rate:.4f}/hr")
-
             stdscr.addstr(11, 0, "SESSION TOTAL COST", curses.A_BOLD)
             stdscr.addstr(12, 2, f"${total_cost:.4f}",
                           curses.color_pair(1) if total_cost < 5.0 else curses.color_pair(3) | curses.A_BOLD)
 
-            stdscr.addstr(19, 0, f"Last update: {datetime.datetime.now().strftime('%H:%M:%S')} | Ctrl+C to exit")
+            # Safe footer position - well within standard terminal height
+            stdscr.addstr(17, 0, f"Last update: {datetime.datetime.now().strftime('%H:%M:%S')} | Ctrl+C to exit")
 
             stdscr.refresh()
             time.sleep(UPDATE_INTERVAL)
 
     except KeyboardInterrupt:
-        # Graceful exit — print to console instead of curses to avoid crash
         if start_time and status == "ACTIVE":
             now = datetime.datetime.now()
             os.makedirs(LOG_DIR, exist_ok=True)
